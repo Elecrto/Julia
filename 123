@@ -1,0 +1,161 @@
+import androidx.compose.desktop.ui.tooling.preview.Preview
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.*
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.application
+import draw_Julia
+import kotlin.math.sqrt
+import kotlinx.coroutines.*
+import java.util.concurrent.ConcurrentLinkedQueue
+
+
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+@Preview
+fun App() {
+    // Изменяемое состояние для scales
+    var scales by remember { mutableStateOf(Scales(0f, 0f, -5.0, 5.0, -5.0, 5.0)) }
+    var scroll by remember { mutableStateOf(false) }
+    var drawData by remember { mutableStateOf(listOf<Pair<Offset, Color>>()) }
+    val maxIterations = 300
+    var isLoading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(key1 = maxIterations, key2 = scales) {
+        isLoading = true
+        drawData = draw_Julia(300, scales)
+        isLoading = false
+    }
+
+    Canvas(modifier = Modifier
+        .fillMaxSize()
+        .onSizeChanged { newSize ->
+            scales = Scales(newSize.width.toFloat(), newSize.height.toFloat(), scales.xMin, scales.xMax, scales.yMin, scales.yMax)
+        }
+        .onPointerEvent(PointerEventType.Scroll) { event ->
+            val change = event.changes.first()
+            scales = scales.rescale(change.position, 0.9)
+            scroll = true
+        })
+    {
+        scales.w = this.size.width
+        scales.h = this.size.height
+
+        if (!isLoading) {
+            for ((offset, color) in drawData) {
+                drawRect(color = color, topLeft = offset, size = Size(1f, 1f))
+            }
+        }
+
+        println(scroll)
+        scroll = false
+    }
+}
+
+class Scales(var w: Float = 0f, var h: Float = 0f,
+             var xMin: Double = -5.0, var xMax: Double = 5.0,
+             var yMin: Double = -5.0, var yMax: Double = 5.0) {
+
+    fun rescale(cursor: Offset, scaleRatio: Double): Scales {
+        val cursorXInDomain = xMin + cursor.x / w * (xMax - xMin)
+        val cursorYInDomain = yMax - cursor.y / h * (yMax - yMin)
+
+        val newWidth = (xMax - xMin) * scaleRatio
+        val newHeight = (yMax - yMin) * scaleRatio
+
+        val newXMin = cursorXInDomain - cursor.x / w * newWidth
+        val newXMax = newXMin + newWidth
+        val newYMax = cursorYInDomain + cursor.y / h * newHeight
+        val newYMin = newYMax - newHeight
+
+        return Scales(w, h, newXMin, newXMax, newYMin, newYMax)
+    }
+}
+
+
+fun main() = application {
+    Window(onCloseRequest = ::exitApplication) {
+        App()
+    }
+}
+
+
+
+class Decart(var x: Float,var y: Float)
+
+class Screen(var x: Float, var y: Float){
+
+    fun scrToDec(scales: Scales):Decart{
+        val x = this.x*(scales.xMax-scales.xMin)/scales.w+scales.xMin
+        val y = scales.yMax - this.y*(scales.yMax-scales.yMin)/scales.h
+        return Decart(x.toFloat(),y.toFloat())
+    }
+}
+fun calculateColor(i: Int, maxIterations: Int): Color {
+    return if (i == maxIterations) {
+        Color.Black
+    } else {
+        val t = i.toDouble() / maxIterations.toDouble()
+        Color.hsv((t * 360.0).toFloat(), 1.0F, 1.0F)
+    }
+}
+
+suspend fun draw_Julia(maxIterations: Int, scales: Scales): List<Pair<Offset, Color>> {
+    return withContext(Dispatchers.Default) {
+        val c = Complex(0.28, 0.0113)
+        val height = scales.h.toInt()
+        val width = scales.w.toInt()
+        val drawData = ConcurrentLinkedQueue<Pair<Offset, Color>>()
+        val numThreads = Runtime.getRuntime().availableProcessors()
+        val chunkSize = height / numThreads
+
+        val jobs = List(numThreads) { threadIndex ->
+            launch {
+                val startY = threadIndex * chunkSize
+                val endY = if (threadIndex == numThreads - 1) height else startY + chunkSize
+
+                for (y in startY until endY) {
+                    for (x in 0 until width) {
+                        val sx = Screen(x.toFloat(), y.toFloat())
+                        val cx = sx.scrToDec(scales)
+                        var z = Complex(cx.x.toDouble(), cx.y.toDouble())
+                        var i = 0
+                        while (i < maxIterations && z.abs() < 2.0) {
+                            z = z * z + c
+                            i++
+                        }
+                        drawData.add(Pair(Offset(x.toFloat(), y.toFloat()), calculateColor(i, maxIterations)))
+                    }
+                }
+            }
+        }
+
+        jobs.forEach { it.join() }
+        drawData.toList()
+    }
+}
+
+
+
+class Complex(var Re: Double, var Im: Double){
+    operator fun times(c: Complex): Complex{
+        val re = this.Re*c.Re-this.Im*c.Im
+        val im = this.Re*c.Im+this.Im*c.Re
+        return Complex(re,im)
+    }
+    operator fun plus(c: Complex): Complex{
+        return Complex(this.Re+c.Re, this.Im+c.Im)
+    }
+    fun abs():Double{
+        return sqrt(this.Re*this.Re+this.Im*this.Im)
+    }
+}
